@@ -1,0 +1,105 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.10.11'
+  HYPIR_COMMIT: 'b61d107c6cef38f01a93c7833558869731cfa8c1'
+  PYINSTALLER_VERSION: '6.22.0'
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: requirements-runtime.txt
+
+      - name: Show build environment
+        shell: pwsh
+        run: |
+          python --version
+          python -m pip --version
+          nvidia-smi 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host 'No GPU expected/required on the build runner.' }
+
+      - name: Fetch pinned HYPIR source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vendor | Out-Null
+          git clone https://github.com/XPixelGroup/HYPIR.git vendor/HYPIR
+          git -C vendor/HYPIR checkout $env:HYPIR_COMMIT
+          $actual = git -C vendor/HYPIR rev-parse HEAD
+          if ($actual -ne $env:HYPIR_COMMIT) { throw "HYPIR commit mismatch: $actual" }
+          $actual | Out-File -Encoding ascii HYPIR-COMMIT.txt
+
+      - name: Install pinned application dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip==25.1.1 wheel==0.45.1 setuptools==80.9.0
+          python -m pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0
+          python -m pip install -r requirements-runtime.txt
+          python -m pip install pyinstaller==$env:PYINSTALLER_VERSION
+
+      - name: Import smoke test
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$PWD\vendor\HYPIR"
+          python -c "import torch, torchvision, PySide6, diffusers, transformers, peft, accelerate; from HYPIR.enhancer.sd2 import SD2Enhancer; print('imports OK'); print('torch', torch.__version__, 'cuda build', torch.version.cuda)"
+
+      - name: Build standalone application
+        shell: pwsh
+        run: |
+          python -m PyInstaller HYPIR-Upscaler.spec --noconfirm --clean
+          if (-not (Test-Path 'dist\HYPIR Upscaler\HYPIR Upscaler.exe')) { throw 'PyInstaller did not produce the expected EXE.' }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw 'ISCC.exe was not found after installing Inno Setup.' }
+          & $iscc 'installer.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+
+      - name: Verify release files
+        shell: pwsh
+        run: python build_tools/verify_build.py
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: Compress-Archive -Path 'dist\HYPIR Upscaler\*' -DestinationPath 'HYPIR-Upscaler-Portable-0.4.0.zip' -Force
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: HYPIR-Upscaler-Setup-0.4.0
+          path: installer-output/HYPIR-Upscaler-Setup-0.4.0.exe
+          if-no-files-found: error
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: HYPIR-Upscaler-Portable-0.4.0
+          path: HYPIR-Upscaler-Portable-0.4.0.zip
+          if-no-files-found: error
