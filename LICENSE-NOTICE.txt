@@ -1,0 +1,8 @@
+This project is an independent desktop wrapper around HYPIR.
+
+HYPIR source code is fetched at build time from XPixelGroup/HYPIR and is not authored by this wrapper project.
+The upstream HYPIR repository states that HYPIR is restricted to non-commercial use unless permission is obtained from its authors.
+
+Stable Diffusion 2.1 model files are downloaded separately by the application on first launch and remain subject to their own license terms.
+
+Before redistribution, review the current upstream licenses and notices for all bundled and downloaded components.
